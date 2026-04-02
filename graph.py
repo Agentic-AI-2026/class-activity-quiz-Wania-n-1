@@ -1,5 +1,6 @@
 import json
 import re
+import asyncio
 from typing import Annotated, Any
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -96,11 +97,31 @@ def executor_node(state: PlannerExecutorState, llm, tools_map) -> PlannerExecuto
     tool_name = step.get("tool")
     
     if tool_name and tool_name in tools_map:
-        # Tool step
+        # Tool step - handle async tools
         print(f"  Calling tool: {tool_name}")
         corrected_args = safe_args(tool_name, step.get("args") or {})
-        result = tools_map[tool_name].invoke(corrected_args)
-        result_str = str(result)
+        
+        # Check if tool has async support and call appropriately
+        tool = tools_map[tool_name]
+        try:
+            # Try async invocation first
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(tool.ainvoke(corrected_args))
+            loop.close()
+            result_str = str(result)
+        except (AttributeError, NotImplementedError, RuntimeError):
+            # Fallback to sync invocation
+            try:
+                result = tool.invoke(corrected_args)
+                result_str = str(result)
+            except:
+                # If both fail, use LLM synthesis
+                print(f"  Tool failed, using LLM synthesis")
+                response = llm.invoke([
+                    HumanMessage(content=f"{step['description']}")
+                ])
+                result_str = response.content
     else:
         # Synthesis step - use LLM with prior results as context
         print(f"  Synthesis step (LLM)")

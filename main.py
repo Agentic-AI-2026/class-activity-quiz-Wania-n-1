@@ -61,9 +61,19 @@ def get_llm():
 
 async def get_mcp_tools(servers: list) -> tuple:
     """Load tools from MCP servers (optional - fails gracefully)."""
+    tools = []
+    tools_map = {}
+    
     try:
-        mcp = MultiServerMCPClient({
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        
+        mcp_config = {
             "data": {
+                "command": sys.executable,
+                "args": [str(TOOLS_DIR / "data_server.py")],
+                "transport": "stdio",
+            },
+            "search": {
                 "command": sys.executable,
                 "args": [str(TOOLS_DIR / "search_server.py")],
                 "transport": "stdio",
@@ -73,31 +83,45 @@ async def get_mcp_tools(servers: list) -> tuple:
                 "args": [str(TOOLS_DIR / "weather_server.py")],
                 "transport": "stdio",
             },
-        })
+            "math": {
+                "command": sys.executable,
+                "args": [str(TOOLS_DIR / "math_server.py")],
+                "transport": "stdio",
+            },
+        }
         
-        tools = []
-        print("📡 Attempting to connect to MCP servers...")
+        mcp = MultiServerMCPClient(mcp_config)
+        
+        print("📡 Connecting to MCP servers...")
         for server in servers:
+            if server not in mcp_config:
+                print(f"  ⚠️  {server}: not configured")
+                continue
+                
             try:
-                server_tools = await asyncio.wait_for(mcp.get_tools(server_name=server), timeout=5)
+                # Add small delay for server startup
+                import asyncio
+                await asyncio.sleep(0.5)
+                server_tools = await asyncio.wait_for(mcp.get_tools(server_name=server), timeout=3)
                 tools.extend(server_tools)
-                print(f"  ✓ {server}")
+                print(f"  ✓ {server}: {len(server_tools)} tools loaded")
             except asyncio.TimeoutError:
-                print(f"  ⚠️  {server}: timeout (running agent without this tool)")
+                print(f"  ⚠️  {server}: timeout (server may need more time)")
             except Exception as e:
-                print(f"  ⚠️  {server}: {str(e)[:80]}")
+                print(f"  ⚠️  {server}: {str(e)[:60]}")
         
         tools_map = {t.name: t for t in tools}
+        
         if tools_map:
-            print(f"✅ MCP tools loaded: {list(tools_map.keys())}\n")
+            print(f"✅ MCP tools ready: {list(tools_map.keys())}\n")
         else:
-            print("⚠️  No MCP tools available (agent will use LLM synthesis)\n")
-        return tools, tools_map
-    
+            print("⚠️  No MCP tools available (using LLM synthesis only)\n")
+            
     except Exception as e:
-        print(f"⚠️  MCP connection failed: {str(e)[:100]}")
-        print("⚠️  Running agent with LLM synthesis only\n")
-        return [], {}
+        print(f"⚠️  MCP client unavailable: {str(e)[:80]}")
+        print("   Continuing with LLM synthesis only\n")
+    
+    return tools, tools_map
 
 # ─── Main Agent Function ──────────────────────────────────────────────────────
 
@@ -146,7 +170,7 @@ async def run_planner_executor_agent(goal: str):
 
 if __name__ == "__main__":
     # Test with the sample goal
-    goal = "Fetch Q3 sales data and summarize it."
+    goal = "Plan an outdoor event for 150 people: calculate tables/chairs, find average ticket price, check weather, and summarize"
     
     # Run the agent
     final_state = asyncio.run(run_planner_executor_agent(goal))
